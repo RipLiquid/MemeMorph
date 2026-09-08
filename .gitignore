@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Downloaded MediaPipe model
+models/*.task
+
+# Third-party reaction media
+assets/reactions/*.gif
