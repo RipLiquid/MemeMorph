@@ -1,9 +1,25 @@
+# Python virtual environment
 .venv/
-__pycache__/
-*.pyc
+venv/
 
-# Downloaded MediaPipe model
+# Python cache
+__pycache__/
+*.py[cod]
+
+# VS Code
+.vscode/
+
+# Operating system
+.DS_Store
+Thumbs.db
+
+# MediaPipe model downloaded during setup
 models/*.task
 
 # Third-party reaction media
 assets/reactions/*.gif
+assets/reactions/*.webp
+assets/reactions/*.mp4
+
+# Logs
+*.log

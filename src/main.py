@@ -8,21 +8,24 @@ from PIL import Image, ImageSequence
 
 
 # ============================================================
-# SETTINGS
+# MEMEMORPH SETTINGS
 # ============================================================
 
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 
-# How long you must hold the Speed expression before it triggers
+# How long the expression must be held before triggering.
+# This helps prevent ordinary blinks from immediately activating
+# the reaction.
 SPEED_HOLD_SECONDS = 0.20
 
-# Small grace period so the GIF doesn't instantly disappear
+# Keeps the reaction active briefly if detection drops for
+# a couple of frames.
 SPEED_RELEASE_GRACE = 0.20
 
 
 # ============================================================
-# PATHS
+# PROJECT PATHS
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -42,7 +45,7 @@ SPEED_GIF_PATH = (
 
 
 # ============================================================
-# MEDIAPIPE BLENDSHAPE NAMES
+# MEDIAPIPE FACE BLENDSHAPES
 # ============================================================
 
 BLENDSHAPE_NAMES = [
@@ -106,32 +109,38 @@ BLENDSHAPE_NAMES = [
 # ============================================================
 
 class GifPlayer:
+    """
+    Loads an animated GIF into memory and returns the
+    correct animation frame based on elapsed time.
+    """
 
     def __init__(self, path):
         self.frames = []
         self.durations = []
-        self.total_duration = 0.0
 
+        self.total_duration = 0.0
         self.started_at = None
 
         self.load(path)
 
     def load(self, path):
-
         if not path.exists():
-            print(f"WARNING: GIF not found: {path}")
+            print()
+            print("WARNING: Speed GIF was not found.")
+            print(f"Expected location: {path}")
+            print("Press G will not display anything until it is added.")
+            print()
             return
 
         gif = Image.open(path)
 
         for frame in ImageSequence.Iterator(gif):
-
             rgba = frame.convert("RGBA")
 
             frame_array = np.array(rgba)
 
-            # Pillow = RGBA
-            # OpenCV = BGRA
+            # Pillow gives RGBA.
+            # OpenCV expects BGRA.
             bgra = cv2.cvtColor(
                 frame_array,
                 cv2.COLOR_RGBA2BGRA
@@ -142,7 +151,8 @@ class GifPlayer:
                 gif.info.get("duration", 80)
             )
 
-            # Prevent broken 0ms GIF frames
+            # Prevent bad GIF metadata from creating
+            # zero-length frames.
             duration_ms = max(
                 duration_ms,
                 20
@@ -159,7 +169,7 @@ class GifPlayer:
         )
 
         print(
-            f"Loaded Speed GIF: "
+            f"Loaded reaction GIF: "
             f"{len(self.frames)} frames"
         )
 
@@ -167,7 +177,6 @@ class GifPlayer:
         return len(self.frames) > 0
 
     def start(self, now=None):
-
         if now is None:
             now = time.perf_counter()
 
@@ -177,36 +186,34 @@ class GifPlayer:
         self.started_at = None
 
     def get_frame(self, now=None):
-
         if not self.available():
             return None
 
-        if self.started_at is None:
-            self.start(now)
-
         if now is None:
             now = time.perf_counter()
+
+        if self.started_at is None:
+            self.start(now)
 
         elapsed = (
             now - self.started_at
         ) % self.total_duration
 
-        running_time = 0.0
+        accumulated_time = 0.0
 
         for index, duration in enumerate(
             self.durations
         ):
+            accumulated_time += duration
 
-            running_time += duration
-
-            if elapsed <= running_time:
+            if elapsed <= accumulated_time:
                 return self.frames[index]
 
         return self.frames[-1]
 
 
 # ============================================================
-# BASIC HELPERS
+# GENERAL HELPERS
 # ============================================================
 
 def get_value(values, name):
@@ -218,10 +225,14 @@ def average(a, b):
 
 
 # ============================================================
-# 16:9 CAMERA CROP
+# CAMERA ASPECT RATIO
 # ============================================================
 
 def make_16_9(frame):
+    """
+    Crops the webcam image to 16:9 without stretching it,
+    then resizes it to 1280x720.
+    """
 
     height, width = frame.shape[:2]
 
@@ -229,7 +240,7 @@ def make_16_9(frame):
     current_ratio = width / height
 
     if current_ratio > target_ratio:
-
+        # Camera image is too wide.
         new_width = int(
             height * target_ratio
         )
@@ -244,7 +255,7 @@ def make_16_9(frame):
         ]
 
     elif current_ratio < target_ratio:
-
+        # Camera image is too tall.
         new_height = int(
             width / target_ratio
         )
@@ -276,6 +287,12 @@ def get_face_box(
     frame_width,
     frame_height
 ):
+    """
+    Creates a box around the detected face.
+
+    Extra padding is added so the reaction GIF covers
+    the entire head instead of only the facial landmarks.
+    """
 
     xs = [
         landmark.x * frame_width
@@ -296,17 +313,18 @@ def get_face_box(
     face_width = x2 - x1
     face_height = y2 - y1
 
-    # Make the GIF slightly larger than the actual face
+    # Horizontal padding.
     x_padding = int(
-        face_width * 0.25
+        face_width * 0.30
     )
 
+    # More padding above the face to include hair/head.
     y_padding_top = int(
-        face_height * 0.28
+        face_height * 0.40
     )
 
     y_padding_bottom = int(
-        face_height * 0.15
+        face_height * 0.18
     )
 
     x1 -= x_padding
@@ -315,9 +333,16 @@ def get_face_box(
     y1 -= y_padding_top
     y2 += y_padding_bottom
 
-    # Keep coordinates inside frame
-    x1 = max(0, x1)
-    y1 = max(0, y1)
+    # Keep the box inside the webcam image.
+    x1 = max(
+        0,
+        x1
+    )
+
+    y1 = max(
+        0,
+        y1
+    )
 
     x2 = min(
         frame_width,
@@ -341,6 +366,10 @@ def overlay_gif(
     gif_frame,
     face_box
 ):
+    """
+    Resizes the current GIF frame and alpha-blends it
+    over the detected face.
+    """
 
     if gif_frame is None:
         return frame
@@ -352,7 +381,8 @@ def overlay_gif(
 
     if (
         target_width <= 0
-        or target_height <= 0
+        or
+        target_height <= 0
     ):
         return frame
 
@@ -397,10 +427,14 @@ def overlay_gif(
 
 
 # ============================================================
-# EXPRESSION ANALYSIS
+# FACIAL EXPRESSION ANALYSIS
 # ============================================================
 
 def analyze_expression(values):
+    """
+    Converts MediaPipe's raw blendshape values into
+    simplified facial-expression measurements.
+    """
 
     # --------------------------------------------------------
     # EYES
@@ -476,7 +510,7 @@ def analyze_expression(values):
     )
 
     # --------------------------------------------------------
-    # MOUTH
+    # MOUTH / LIPS
     # --------------------------------------------------------
 
     jaw_open = get_value(
@@ -528,7 +562,7 @@ def analyze_expression(values):
     )
 
     # --------------------------------------------------------
-    # HUMAN-READABLE STATES
+    # READABLE EYE STATE
     # --------------------------------------------------------
 
     if blink_average > 0.55:
@@ -543,6 +577,10 @@ def analyze_expression(values):
     else:
         eye_state = "OPEN"
 
+    # --------------------------------------------------------
+    # READABLE EYEBROW STATE
+    # --------------------------------------------------------
+
     if brow_down_average > 0.35:
         brow_state = "DOWN"
 
@@ -552,13 +590,26 @@ def analyze_expression(values):
     else:
         brow_state = "NEUTRAL"
 
-    # --------------------------------------------------------
-    # SPEED FACE
-    # --------------------------------------------------------
+    # ========================================================
+    # SPEED REACTION DETECTOR
+    # ========================================================
+
+    # IMPORTANT:
+    #
+    # The Speed expression now accepts:
+    #
+    #     eyes CLOSED
+    #          OR
+    #     eyes SQUINTED
+    #
+    # It does NOT require both at the same time.
+    #
+    # Eyebrow and lip checks are still required to
+    # prevent a normal blink from triggering the reaction.
 
     eyes_match = (
         blink_average > 0.50
-        and
+        or
         squint_average > 0.45
     )
 
@@ -603,38 +654,43 @@ def analyze_expression(values):
         "mouth_roll": mouth_roll,
         "mouth_stretch": mouth_stretch,
 
+        "eyes_match": eyes_match,
+        "brows_match": brows_match,
+        "lips_match": lips_match,
+
         "speed_candidate": speed_candidate,
     }
 
 
 # ============================================================
-# MAIN
+# MAIN PROGRAM
 # ============================================================
 
 def main():
 
     # --------------------------------------------------------
-    # Check required files
+    # Required MediaPipe model
     # --------------------------------------------------------
 
     if not MODEL_PATH.exists():
 
-        print(
-            "ERROR: MediaPipe model not found."
-        )
-
-        print(
-            MODEL_PATH
-        )
+        print()
+        print("ERROR: MediaPipe model was not found.")
+        print(f"Expected location: {MODEL_PATH}")
+        print()
 
         return
+
+    # --------------------------------------------------------
+    # Load reaction GIF
+    # --------------------------------------------------------
 
     speed_gif = GifPlayer(
         SPEED_GIF_PATH
     )
 
     # --------------------------------------------------------
-    # MediaPipe
+    # MediaPipe setup
     # --------------------------------------------------------
 
     BaseOptions = (
@@ -677,7 +733,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Camera
+    # Webcam setup
     # --------------------------------------------------------
 
     camera = cv2.VideoCapture(0)
@@ -706,7 +762,7 @@ def main():
         return
 
     # --------------------------------------------------------
-    # Window
+    # OpenCV window
     # --------------------------------------------------------
 
     cv2.namedWindow(
@@ -721,15 +777,23 @@ def main():
     )
 
     print()
-    print("MemeMorph started.")
+    print("==============================")
+    print("          MemeMorph")
+    print("==============================")
     print()
+    print("Face tracking: ON")
+    print("Expression tracking: ON")
+    print("Resolution: 1280x720")
+    print()
+    print("CONTROLS")
+    print("------------------------------")
     print("Q = Quit")
     print("D = Toggle debug view")
-    print("G = Test Speed GIF manually")
+    print("G = Manually test Speed GIF")
     print()
 
     # --------------------------------------------------------
-    # State
+    # Runtime state
     # --------------------------------------------------------
 
     debug_mode = True
@@ -745,7 +809,7 @@ def main():
     manual_gif_until = 0.0
 
     # --------------------------------------------------------
-    # Start tracker
+    # Start MediaPipe detector
     # --------------------------------------------------------
 
     with FaceLandmarker.create_from_options(
@@ -756,6 +820,10 @@ def main():
 
             now = time.perf_counter()
 
+            # ------------------------------------------------
+            # Camera frame
+            # ------------------------------------------------
+
             success, frame = (
                 camera.read()
             )
@@ -763,25 +831,24 @@ def main():
             if not success:
 
                 print(
-                    "ERROR: Camera frame failed."
+                    "ERROR: Could not read webcam frame."
                 )
 
                 break
 
-            # Mirror camera
+            # Mirror like a selfie camera.
             frame = cv2.flip(
                 frame,
                 1
             )
 
+            # Convert to landscape 16:9.
             frame = make_16_9(
                 frame
             )
 
-            clean_frame = frame.copy()
-
             # ------------------------------------------------
-            # MediaPipe
+            # Convert frame for MediaPipe
             # ------------------------------------------------
 
             rgb_frame = cv2.cvtColor(
@@ -807,7 +874,7 @@ def main():
             )
 
             # ------------------------------------------------
-            # Blendshapes
+            # Extract facial blendshapes
             # ------------------------------------------------
 
             blendshape_values = {}
@@ -818,9 +885,7 @@ def main():
                     result.face_blendshapes[0]
                 ):
 
-                    index = (
-                        blendshape.index
-                    )
+                    index = blendshape.index
 
                     if (
                         0
@@ -838,12 +903,16 @@ def main():
                             name
                         ] = blendshape.score
 
+            # ------------------------------------------------
+            # Analyze expression
+            # ------------------------------------------------
+
             expression = analyze_expression(
                 blendshape_values
             )
 
             # ------------------------------------------------
-            # Speed expression smoothing
+            # SPEED REACTION SMOOTHING
             # ------------------------------------------------
 
             if expression[
@@ -853,7 +922,6 @@ def main():
                 last_speed_match = now
 
                 if speed_candidate_since is None:
-
                     speed_candidate_since = now
 
                 held_for = (
@@ -865,7 +933,6 @@ def main():
                     held_for
                     >= SPEED_HOLD_SECONDS
                 ):
-
                     speed_active = True
 
             else:
@@ -877,7 +944,6 @@ def main():
                     - last_speed_match
                     > SPEED_RELEASE_GRACE
                 ):
-
                     speed_active = False
 
             # ------------------------------------------------
@@ -894,23 +960,20 @@ def main():
                 manual_active
             )
 
-            # Restart GIF when reaction begins
+            # Restart the GIF whenever the reaction begins.
             if (
                 overlay_active
                 and
                 not previous_overlay_active
             ):
+                speed_gif.start(now)
 
-                speed_gif.start(
-                    now
-                )
-
+            # Stop animation when the reaction ends.
             if (
                 not overlay_active
                 and
                 previous_overlay_active
             ):
-
                 speed_gif.stop()
 
             previous_overlay_active = (
@@ -918,7 +981,7 @@ def main():
             )
 
             # ------------------------------------------------
-            # Face landmarks + GIF
+            # Face detection
             # ------------------------------------------------
 
             face_detected = False
@@ -942,7 +1005,7 @@ def main():
                 )
 
                 # --------------------------------------------
-                # GIF overlay
+                # Reaction GIF
                 # --------------------------------------------
 
                 if (
@@ -989,9 +1052,9 @@ def main():
                             -1
                         )
 
-            # ------------------------------------------------
-            # Debug panel
-            # ------------------------------------------------
+            # =================================================
+            # DEBUG PANEL
+            # =================================================
 
             if debug_mode:
 
@@ -1000,7 +1063,7 @@ def main():
                 cv2.rectangle(
                     overlay,
                     (20, 20),
-                    (430, 660),
+                    (450, 690),
                     (0, 0, 0),
                     -1
                 )
@@ -1013,6 +1076,10 @@ def main():
                     0
                 )
 
+                # --------------------------------------------
+                # Title
+                # --------------------------------------------
+
                 cv2.putText(
                     frame,
                     "MemeMorph",
@@ -1022,6 +1089,10 @@ def main():
                     (255, 255, 255),
                     2
                 )
+
+                # --------------------------------------------
+                # Face status
+                # --------------------------------------------
 
                 if face_detected:
 
@@ -1052,13 +1123,13 @@ def main():
                     face_text,
                     (40, 100),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
+                    0.70,
                     face_color,
                     2
                 )
 
                 # --------------------------------------------
-                # Reaction status
+                # Speed state
                 # --------------------------------------------
 
                 if speed_active:
@@ -1110,7 +1181,7 @@ def main():
                 )
 
                 # --------------------------------------------
-                # Expression states
+                # Main detected states
                 # --------------------------------------------
 
                 cv2.putText(
@@ -1142,6 +1213,62 @@ def main():
                     (255, 255, 0),
                     2
                 )
+
+                # --------------------------------------------
+                # Component matching
+                # --------------------------------------------
+
+                eyes_status = (
+                    "YES"
+                    if expression["eyes_match"]
+                    else "NO"
+                )
+
+                brows_status = (
+                    "YES"
+                    if expression["brows_match"]
+                    else "NO"
+                )
+
+                lips_status = (
+                    "YES"
+                    if expression["lips_match"]
+                    else "NO"
+                )
+
+                cv2.putText(
+                    frame,
+                    f"Eyes Match: {eyes_status}",
+                    (40, 260),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.52,
+                    (255, 255, 255),
+                    1
+                )
+
+                cv2.putText(
+                    frame,
+                    f"Brows Match: {brows_status}",
+                    (40, 290),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.52,
+                    (255, 255, 255),
+                    1
+                )
+
+                cv2.putText(
+                    frame,
+                    f"Lips Match: {lips_status}",
+                    (40, 320),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.52,
+                    (255, 255, 255),
+                    1
+                )
+
+                # --------------------------------------------
+                # Raw values
+                # --------------------------------------------
 
                 debug_values = [
                     (
@@ -1190,12 +1317,9 @@ def main():
                     ),
                 ]
 
-                y_position = 265
+                y_position = 365
 
-                for (
-                    name,
-                    value
-                ) in debug_values:
+                for name, value in debug_values:
 
                     cv2.putText(
                         frame,
@@ -1205,50 +1329,52 @@ def main():
                             y_position
                         ),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.52,
+                        0.50,
                         (255, 255, 255),
                         1
                     )
 
-                    y_position += 31
+                    y_position += 27
 
-            # ------------------------------------------------
-            # Display
-            # ------------------------------------------------
+            # =================================================
+            # SHOW WINDOW
+            # =================================================
 
             cv2.imshow(
                 "MemeMorph",
                 frame
             )
 
-            # ------------------------------------------------
-            # Keyboard
-            # ------------------------------------------------
+            # =================================================
+            # KEYBOARD CONTROLS
+            # =================================================
 
             key = (
                 cv2.waitKey(1)
                 & 0xFF
             )
 
+            # Quit.
             if key == ord("q"):
                 break
 
+            # Toggle debugging.
             elif key == ord("d"):
 
                 debug_mode = (
                     not debug_mode
                 )
 
+            # Manually play the reaction GIF.
             elif key == ord("g"):
 
-                # Play GIF manually for 3 seconds
                 manual_gif_until = (
                     time.perf_counter()
                     + 3.0
                 )
 
     # ========================================================
-    # Cleanup
+    # CLEANUP
     # ========================================================
 
     camera.release()
@@ -1257,7 +1383,7 @@ def main():
 
 
 # ============================================================
-# RUN
+# START PROGRAM
 # ============================================================
 
 if __name__ == "__main__":
