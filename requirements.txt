@@ -2,3 +2,5 @@ mediapipe==1.0.1
 numpy
 opencv-python
 Pillow
+azure-appconfiguration-provider
+azure-identity

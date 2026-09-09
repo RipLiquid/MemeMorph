@@ -1,0 +1,105 @@
+{
+  "app": {
+    "detection_width": 640,
+    "detection_height": 360,
+    "face_detection_every_n_frames": 1,
+    "hand_detection_every_n_frames": 2,
+    "pose_detection_every_n_frames": 4,
+    "face_landmark_draw_step": 6
+  },
+  "calibration": {
+    "warmup_seconds": 1.5,
+    "capture_seconds": 2.5,
+    "validation_seconds": 0.8,
+    "arming_seconds": 1.8,
+    "min_samples": 28
+  },
+  "reactions": {
+    "speed": {
+      "enabled": true,
+      "hold": 0.18,
+      "release": 0.28,
+      "overlay_scale": 1.45,
+      "squint_delta_min": 0.1,
+      "blink_delta_min": 0.18,
+      "brow_down_delta_min": 0.14,
+      "jaw_open_max": 0.18
+    },
+    "eyebrow": {
+      "enabled": true,
+      "hold": 0.28,
+      "release": 0.3,
+      "overlay_scale": 1.4,
+      "brow_asymmetry_delta_min": 0.12,
+      "brow_asymmetry_raw_min": 0.16,
+      "jaw_open_max": 0.2
+    },
+    "surprised": {
+      "enabled": true,
+      "hold": 0.18,
+      "release": 0.28,
+      "overlay_scale": 1.4,
+      "wide_min": 0.22,
+      "jaw_open_min": 0.3
+    },
+    "sad": {
+      "enabled": true,
+      "hold": 0.28,
+      "release": 0.35,
+      "overlay_scale": 1.4,
+      "brow_inner_up_min": 0.22,
+      "mouth_frown_min": 0.15,
+      "mouth_smile_max": 0.2,
+      "jaw_open_max": 0.32
+    },
+    "side_eye": {
+      "enabled": true,
+      "hold": 0.24,
+      "release": 0.32,
+      "overlay_scale": 1.4,
+      "side_eye_min": 0.34,
+      "blink_max": 0.42,
+      "jaw_open_max": 0.3
+    },
+    "jerry_laugh": {
+      "enabled": true,
+      "hold": 0.22,
+      "release": 0.32,
+      "overlay_scale": 1.45,
+      "mouth_smile_min": 0.35,
+      "jaw_open_min": 0.22,
+      "squint_min": 0.2,
+      "blink_min": 0.25
+    },
+    "jerry_point": {
+      "enabled": true,
+      "hold": 0.2,
+      "release": 0.38,
+      "overlay_scale": 1.55,
+      "mouth_smile_min": 0.18,
+      "jaw_open_min": 0.2,
+      "squint_min": 0.14,
+      "blink_min": 0.22
+    },
+    "facepalm": {
+      "enabled": true,
+      "hold": 0.2,
+      "release": 0.42,
+      "overlay_scale": 1.55
+    },
+    "thumbs_up": {
+      "enabled": true,
+      "hold": 0.22,
+      "release": 0.4,
+      "overlay_scale": 1.55
+    },
+    "absolute_cinema": {
+      "enabled": true,
+      "hold": 0.28,
+      "release": 0.48,
+      "overlay_scale": 1.8,
+      "shoulder_height_margin": 0.06,
+      "hand_spread_multiplier": 1.25
+    }
+  }
+}
