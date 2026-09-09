@@ -42,6 +42,34 @@ PANEL_HEIGHT = 1032
 FONT = cv2.FONT_HERSHEY_DUPLEX
 MANUAL_REACTION_SECONDS = 3.0
 
+# Neutral-face calibration. MemeMorph learns the user's baseline before
+# automatic reactions are enabled.
+CALIBRATION_WARMUP_SECONDS = 1.5
+CALIBRATION_DURATION_SECONDS = 2.5
+CALIBRATION_VALIDATION_SECONDS = 0.8
+CALIBRATION_ARMING_SECONDS = 1.8
+CALIBRATION_MIN_SAMPLES = 28
+CALIBRATION_KEYS = [
+    "blink",
+    "squint",
+    "wide",
+    "brow_down",
+    "brow_inner_up",
+    "brow_outer_left",
+    "brow_outer_right",
+    "brow_asymmetry",
+    "jaw_open",
+    "mouth_smile",
+    "mouth_frown",
+    "mouth_pucker",
+    "mouth_funnel",
+    "mouth_press",
+    "mouth_roll",
+    "look_left",
+    "look_right",
+    "side_eye",
+]
+
 
 # ============================================================
 # PATHS
@@ -531,6 +559,31 @@ def analyze_face(values):
     }
 
 
+def build_neutral_baseline(samples):
+    """Use the median so blinking/noise does not distort the neutral baseline."""
+    if not samples:
+        return None
+
+    baseline = {}
+
+    for key in CALIBRATION_KEYS:
+        values = [sample[key] for sample in samples]
+        baseline[key] = float(np.median(values))
+
+    return baseline
+
+
+def calculate_face_delta(face, baseline):
+    """Return how much each current facial metric changed from neutral."""
+    if baseline is None:
+        return {key: 0.0 for key in CALIBRATION_KEYS}
+
+    return {
+        key: face.get(key, 0.0) - baseline.get(key, 0.0)
+        for key in CALIBRATION_KEYS
+    }
+
+
 # ============================================================
 # HAND ANALYSIS
 # ============================================================
@@ -792,41 +845,51 @@ def detect_absolute_cinema(pose_result, hand_data):
 # FACE REACTION CONDITIONS
 # ============================================================
 
-def speed_condition(face):
+def speed_condition(face, face_delta):
     """
-    Tuned around the readings you showed earlier:
-      eyeBlink ~0.70
-      eyeSquint ~0.63
-      browDown ~0.50+
-      mouth movement is subtler
+    IShowSpeed reverse-smile expression.
+
+    This reaction is intentionally driven by CHANGE FROM THE USER'S
+    CALIBRATED NEUTRAL FACE rather than raw scores.
+
+    The user's tests showed mouthPucker can be extremely high even while
+    neutral, so pucker is no longer used as a required Speed signal.
     """
-    eyes = (
-        face["blink"] > 0.50
-        or face["squint"] > 0.42
+    eye_change = (
+        face_delta["squint"] > 0.10
+        or face_delta["blink"] > 0.18
     )
 
-    brows = face["brow_down"] > 0.36
-
-    mouth = (
-        face["mouth_pucker"] > 0.050
-        or face["mouth_funnel"] > 0.10
-        or face["mouth_press"] > 0.14
-        or face["mouth_roll"] > 0.14
-        or face["mouth_frown"] > 0.12
+    brow_change = (
+        face_delta["brow_down"] > 0.14
     )
 
-    return eyes and brows and mouth
+    mouth_closed = (
+        face["jaw_open"] < 0.18
+    )
 
-
-def eyebrow_condition(face):
     return (
-        face["brow_asymmetry"] > 0.18
-        and max(
-            face["brow_outer_left"],
-            face["brow_outer_right"],
-        ) > 0.24
-        and face["jaw_open"] < 0.28
-        and face["blink"] < 0.55
+        eye_change
+        and brow_change
+        and mouth_closed
+    )
+
+
+def eyebrow_condition(face, face_delta):
+    """
+    Single-eyebrow raise.
+
+    Calibrated from the live test:
+      raw brow asymmetry ~0.23
+      delta brow asymmetry ~+0.20
+
+    Using both raw asymmetry and change from neutral keeps normal
+    eyebrow movement from triggering too easily.
+    """
+    return (
+        face_delta["brow_asymmetry"] > 0.12
+        and face["brow_asymmetry"] > 0.16
+        and face["jaw_open"] < 0.20
     )
 
 
@@ -894,6 +957,7 @@ def thumbs_up_condition(hand_data):
 
 def choose_reaction(
     face,
+    face_delta,
     face_landmarks,
     pose_result,
     hand_data,
@@ -912,10 +976,10 @@ def choose_reaction(
     if thumbs_up_condition(hand_data):
         return "thumbs_up"
 
-    if speed_condition(face):
+    if speed_condition(face, face_delta):
         return "speed"
 
-    if eyebrow_condition(face):
+    if eyebrow_condition(face, face_delta):
         return "eyebrow"
 
     if surprised_condition(face):
@@ -1048,31 +1112,55 @@ def draw_status_badge(frame, label, value, x, y, good):
     )
 
 
-def draw_metric(frame, label, value, y):
-    x = PANEL_X + 30
-
+def draw_metric_compact(
+    frame,
+    label,
+    value,
+    delta,
+    x,
+    y,
+    width=205,
+):
+    """Compact two-column metric row with neutral-relative delta."""
     draw_text(
         frame,
         label,
         x,
         y,
-        size=0.40,
+        size=0.36,
         color=(205, 208, 214),
     )
 
     draw_text(
         frame,
         f"{value:.2f}",
-        x + 385,
+        x + 92,
         y,
-        size=0.40,
-        color=(235, 235, 238),
+        size=0.36,
+        color=(240, 240, 243),
     )
 
-    bar_x = x + 120
-    bar_y = y - 9
-    bar_width = 245
-    bar_height = 8
+    delta_color = (
+        (105, 225, 145)
+        if delta > 0.025
+        else (225, 165, 95)
+        if delta < -0.025
+        else (145, 150, 160)
+    )
+
+    draw_text(
+        frame,
+        f"d{delta:+.2f}",
+        x + 138,
+        y,
+        size=0.31,
+        color=delta_color,
+    )
+
+    bar_x = x
+    bar_y = y + 8
+    bar_width = width
+    bar_height = 6
 
     cv2.rectangle(
         frame,
@@ -1082,17 +1170,109 @@ def draw_metric(frame, label, value, y):
         -1,
     )
 
-    amount = int(
-        bar_width
-        * np.clip(value, 0.0, 1.0)
-    )
+    amount = int(bar_width * np.clip(value, 0.0, 1.0))
 
     cv2.rectangle(
         frame,
         (bar_x, bar_y),
         (bar_x + amount, bar_y + bar_height),
-        (205, 205, 210),
+        (200, 203, 208),
         -1,
+    )
+
+
+def draw_calibration_overlay(
+    frame,
+    progress,
+    sample_count,
+    face_detected,
+    calibration_phase,
+):
+    box_width = 720
+    box_height = 170
+    x1 = (OUTPUT_WIDTH - box_width) // 2 + 150
+    y1 = OUTPUT_HEIGHT - box_height - 54
+    x2 = x1 + box_width
+    y2 = y1 + box_height
+
+    overlay = frame.copy()
+    cv2.rectangle(
+        overlay,
+        (x1, y1),
+        (x2, y2),
+        (10, 12, 16),
+        -1,
+    )
+    cv2.addWeighted(overlay, 0.84, frame, 0.16, 0, frame)
+
+    title_by_phase = {
+        "warming": "WARMING UP FACE TRACKER",
+        "capturing": "LEARNING NEUTRAL FACE",
+        "validating": "VALIDATING CALIBRATION",
+        "arming": "ARMING REACTION ENGINE",
+    }
+
+    draw_text(
+        frame,
+        title_by_phase.get(
+            calibration_phase,
+            "CALIBRATING NEUTRAL FACE",
+        ),
+        x1 + 28,
+        y1 + 42,
+        size=0.68,
+        thickness=2,
+        color=(255, 255, 255),
+    )
+
+    if not face_detected:
+        instruction = "Face not detected - move into the camera view"
+    elif calibration_phase == "warming":
+        instruction = "Look straight at the camera - tracker is stabilizing"
+    elif calibration_phase == "validating":
+        instruction = "Stay neutral for one more moment"
+    elif calibration_phase == "arming":
+        instruction = "Keep the same neutral face - reactions are still disabled"
+    else:
+        instruction = "Keep a relaxed neutral expression and look straight ahead"
+
+    draw_text(
+        frame,
+        instruction,
+        x1 + 28,
+        y1 + 76,
+        size=0.44,
+        color=(190, 196, 205),
+    )
+
+    bar_x = x1 + 28
+    bar_y = y1 + 104
+    bar_width = box_width - 56
+    bar_height = 18
+
+    cv2.rectangle(
+        frame,
+        (bar_x, bar_y),
+        (bar_x + bar_width, bar_y + bar_height),
+        (52, 55, 62),
+        -1,
+    )
+
+    cv2.rectangle(
+        frame,
+        (bar_x, bar_y),
+        (bar_x + int(bar_width * np.clip(progress, 0.0, 1.0)), bar_y + bar_height),
+        (105, 210, 135),
+        -1,
+    )
+
+    draw_text(
+        frame,
+        f"{int(progress * 100):d}%   |   {sample_count} samples",
+        x1 + 28,
+        y1 + 151,
+        size=0.40,
+        color=(180, 186, 195),
     )
 
 
@@ -1112,9 +1292,13 @@ def draw_debug_panel(
     candidate_reaction,
     display_reaction,
     face,
+    face_delta,
     gesture_debug,
     fps,
     performance,
+    calibrated,
+    calibration_progress,
+    calibration_phase,
 ):
     draw_transparent_panel(frame)
 
@@ -1154,14 +1338,33 @@ def draw_debug_panel(
         color=(160, 168, 180),
     )
 
-    # Tracking
-    draw_section_title(
+    if calibrated:
+        calibration_text = "CALIBRATION: READY"
+    elif calibration_phase == "warming":
+        calibration_text = "CALIBRATION: WARMING UP"
+    elif calibration_phase == "validating":
+        calibration_text = "CALIBRATION: VALIDATING"
+    elif calibration_phase == "arming":
+        calibration_text = "CALIBRATION: ARMING"
+    else:
+        calibration_text = f"CALIBRATING: {int(calibration_progress * 100)}%"
+
+    draw_text(
         frame,
-        "Tracking",
-        PANEL_Y + 142,
+        calibration_text,
+        left,
+        PANEL_Y + 128,
+        size=0.35,
+        color=(
+            (105, 225, 145)
+            if calibrated
+            else (110, 205, 245)
+        ),
     )
 
-    badge_y = PANEL_Y + 164
+    # Tracking
+    draw_section_title(frame, "Tracking", PANEL_Y + 158)
+    badge_y = PANEL_Y + 180
 
     draw_status_badge(
         frame,
@@ -1190,12 +1393,8 @@ def draw_debug_panel(
         hand_data["count"] > 0,
     )
 
-    # Reaction
-    draw_section_title(
-        frame,
-        "Reaction",
-        PANEL_Y + 252,
-    )
+    # Reaction state
+    draw_section_title(frame, "Reaction", PANEL_Y + 268)
 
     rows = [
         ("Detected", reaction_label(detected_reaction)),
@@ -1203,7 +1402,7 @@ def draw_debug_panel(
         ("Active", reaction_label(display_reaction)),
     ]
 
-    row_y = PANEL_Y + 284
+    row_y = PANEL_Y + 300
 
     for label, value in rows:
         draw_text(
@@ -1211,7 +1410,7 @@ def draw_debug_panel(
             label,
             left,
             row_y,
-            size=0.40,
+            size=0.39,
             color=(160, 168, 180),
         )
 
@@ -1220,7 +1419,7 @@ def draw_debug_panel(
             value,
             left + 105,
             row_y,
-            size=0.46,
+            size=0.44,
             color=(
                 (255, 255, 255)
                 if value != "-"
@@ -1228,14 +1427,10 @@ def draw_debug_panel(
             ),
         )
 
-        row_y += 32
+        row_y += 30
 
-    # Gesture states
-    draw_section_title(
-        frame,
-        "Gestures",
-        PANEL_Y + 394,
-    )
+    # Gesture state
+    draw_section_title(frame, "Gestures", PANEL_Y + 404)
 
     gestures = [
         ("Thumb Point", gesture_debug["thumb_point"]),
@@ -1244,7 +1439,7 @@ def draw_debug_panel(
         ("Cinema Hands", gesture_debug["cinema"]),
     ]
 
-    gesture_y = PANEL_Y + 425
+    gesture_y = PANEL_Y + 435
 
     for label, active in gestures:
         draw_text(
@@ -1252,7 +1447,7 @@ def draw_debug_panel(
             label,
             left,
             gesture_y,
-            size=0.42,
+            size=0.40,
             color=(200, 204, 210),
         )
 
@@ -1261,7 +1456,7 @@ def draw_debug_panel(
             "YES" if active else "NO",
             left + 390,
             gesture_y,
-            size=0.42,
+            size=0.40,
             color=(
                 (100, 230, 140)
                 if active
@@ -1269,52 +1464,67 @@ def draw_debug_panel(
             ),
         )
 
-        gesture_y += 28
+        gesture_y += 27
 
-    # Face metrics
-    draw_section_title(
-        frame,
-        "Face Metrics",
-        PANEL_Y + 556,
-    )
+    # Face metrics - two compact columns.  The delta is relative to neutral.
+    draw_section_title(frame, "Face Metrics  (d = change from neutral)", PANEL_Y + 548)
 
-    metrics = [
-        ("Blink", face["blink"]),
-        ("Squint", face["squint"]),
-        ("Wide", face["wide"]),
-        ("Jaw", face["jaw_open"]),
-        ("Smile", face["mouth_smile"]),
-        ("Frown", face["mouth_frown"]),
-        ("Brow Down", face["brow_down"]),
-        ("Brow Inner", face["brow_inner_up"]),
-        ("Brow Asym", face["brow_asymmetry"]),
-        ("Side Eye", face["side_eye"]),
+    left_metrics = [
+        ("Blink", "blink"),
+        ("Squint", "squint"),
+        ("Wide", "wide"),
+        ("Jaw", "jaw_open"),
+        ("Brow Down", "brow_down"),
+        ("Brow Inner", "brow_inner_up"),
+        ("Brow Asym", "brow_asymmetry"),
     ]
 
-    metric_y = PANEL_Y + 592
+    right_metrics = [
+        ("Smile", "mouth_smile"),
+        ("Frown", "mouth_frown"),
+        ("Pucker", "mouth_pucker"),
+        ("Press", "mouth_press"),
+        ("Funnel", "mouth_funnel"),
+        ("Roll", "mouth_roll"),
+        ("Side Eye", "side_eye"),
+    ]
 
-    for label, value in metrics:
-        draw_metric(
+    metric_start_y = PANEL_Y + 586
+    row_spacing = 42
+
+    for index, (label, key) in enumerate(left_metrics):
+        draw_metric_compact(
             frame,
             label,
-            value,
-            metric_y,
+            face[key],
+            face_delta.get(key, 0.0),
+            left,
+            metric_start_y + index * row_spacing,
+            width=205,
         )
-        metric_y += 31
+
+    right_x = left + 235
+
+    for index, (label, key) in enumerate(right_metrics):
+        draw_metric_compact(
+            frame,
+            label,
+            face[key],
+            face_delta.get(key, 0.0),
+            right_x,
+            metric_start_y + index * row_spacing,
+            width=205,
+        )
 
     # Controls
-    draw_section_title(
-        frame,
-        "Controls",
-        PANEL_Y + 922,
-    )
+    draw_section_title(frame, "Controls", PANEL_Y + 918)
 
     draw_text(
         frame,
-        "D  Panel   L  Landmarks   Q  Quit",
+        "D Panel   L Landmarks   R Recalibrate   Q Quit",
         left,
-        PANEL_Y + 958,
-        size=0.40,
+        PANEL_Y + 953,
+        size=0.35,
         color=(200, 204, 210),
     )
 
@@ -1322,8 +1532,8 @@ def draw_debug_panel(
         frame,
         "1-9, 0  Manual reaction test",
         left,
-        PANEL_Y + 985,
-        size=0.40,
+        PANEL_Y + 980,
+        size=0.38,
         color=(200, 204, 210),
     )
 
@@ -1459,6 +1669,8 @@ def main():
     print("9 = Thumbs Up")
     print("0 = Absolute Cinema")
     print("D = Toggle debug")
+    print("L = Toggle landmarks")
+    print("R = Recalibrate neutral face")
     print("Q = Quit")
     print()
 
@@ -1487,6 +1699,22 @@ def main():
     last_timestamp_ms = 0
 
     draw_landmarks = False
+
+    # Neutral calibration state.  Automatic reactions remain disabled until
+    # this baseline is captured.
+    neutral_baseline = None
+    calibration_candidate = None
+    calibration_samples = []
+    calibration_validation_samples = []
+    calibration_arming_samples = []
+
+    calibration_warmup_started_at = None
+    calibration_started_at = None
+    calibration_validation_started_at = None
+    calibration_arming_started_at = None
+
+    calibration_progress = 0.0
+    calibration_phase = "warming"
 
     performance = {
         "face_ms": 0.0,
@@ -1622,12 +1850,28 @@ def main():
 
                 if face_result.face_blendshapes:
                     for blendshape in face_result.face_blendshapes[0]:
-                        index = blendshape.index
+                        # Prefer the label MediaPipe returns with the score.
+                        # This is safer than assuming a fixed index order.
+                        category_name = getattr(
+                            blendshape,
+                            "category_name",
+                            "",
+                        ) or ""
 
-                        if 0 <= index < len(BLENDSHAPE_NAMES):
+                        if category_name in BLENDSHAPE_NAMES:
                             blendshape_values[
-                                BLENDSHAPE_NAMES[index]
+                                category_name
                             ] = blendshape.score
+
+                        else:
+                            # Compatibility fallback for builds that do not
+                            # populate category_name.
+                            index = blendshape.index
+
+                            if 0 <= index < len(BLENDSHAPE_NAMES):
+                                blendshape_values[
+                                    BLENDSHAPE_NAMES[index]
+                                ] = blendshape.score
 
                 face_landmarks = None
 
@@ -1637,6 +1881,278 @@ def main():
                 face_data = analyze_face(
                     blendshape_values
                 )
+
+                # ------------------------------------------------
+                # Neutral-face calibration
+                # ------------------------------------------------
+
+                face_detected = face_landmarks is not None
+
+                if neutral_baseline is None:
+                    if not face_detected:
+                        # A continuous face-visible window is required.
+                        calibration_candidate = None
+
+                        calibration_samples.clear()
+                        calibration_validation_samples.clear()
+                        calibration_arming_samples.clear()
+
+                        calibration_warmup_started_at = None
+                        calibration_started_at = None
+                        calibration_validation_started_at = None
+                        calibration_arming_started_at = None
+
+                        calibration_progress = 0.0
+                        calibration_phase = "warming"
+
+                    else:
+                        # ------------------------------------------------
+                        # Phase 1: MediaPipe warm-up
+                        # ------------------------------------------------
+
+                        if calibration_phase == "warming":
+                            if calibration_warmup_started_at is None:
+                                calibration_warmup_started_at = now
+
+                            warmup_elapsed = (
+                                now - calibration_warmup_started_at
+                            )
+
+                            calibration_progress = min(
+                                0.18,
+                                0.18
+                                * warmup_elapsed
+                                / CALIBRATION_WARMUP_SECONDS,
+                            )
+
+                            if (
+                                warmup_elapsed
+                                >= CALIBRATION_WARMUP_SECONDS
+                            ):
+                                calibration_phase = "capturing"
+                                calibration_started_at = now
+                                calibration_samples.clear()
+
+                        # ------------------------------------------------
+                        # Phase 2: Learn neutral
+                        # ------------------------------------------------
+
+                        elif calibration_phase == "capturing":
+                            calibration_samples.append(
+                                {
+                                    key: face_data[key]
+                                    for key in CALIBRATION_KEYS
+                                }
+                            )
+
+                            elapsed = (
+                                now - calibration_started_at
+                            )
+
+                            capture_progress = min(
+                                1.0,
+                                elapsed
+                                / CALIBRATION_DURATION_SECONDS,
+                            )
+
+                            calibration_progress = (
+                                0.18
+                                + 0.57 * capture_progress
+                            )
+
+                            if (
+                                elapsed
+                                >= CALIBRATION_DURATION_SECONDS
+                                and len(calibration_samples)
+                                >= CALIBRATION_MIN_SAMPLES
+                            ):
+                                calibration_candidate = (
+                                    build_neutral_baseline(
+                                        calibration_samples
+                                    )
+                                )
+
+                                calibration_phase = "validating"
+                                calibration_validation_started_at = now
+                                calibration_validation_samples.clear()
+
+                        # ------------------------------------------------
+                        # Phase 3: Make sure capture stayed stable
+                        # ------------------------------------------------
+
+                        elif calibration_phase == "validating":
+                            calibration_validation_samples.append(
+                                {
+                                    key: face_data[key]
+                                    for key in CALIBRATION_KEYS
+                                }
+                            )
+
+                            validation_elapsed = (
+                                now
+                                - calibration_validation_started_at
+                            )
+
+                            validation_progress = min(
+                                1.0,
+                                validation_elapsed
+                                / CALIBRATION_VALIDATION_SECONDS,
+                            )
+
+                            calibration_progress = (
+                                0.75
+                                + 0.10 * validation_progress
+                            )
+
+                            if (
+                                validation_elapsed
+                                >= CALIBRATION_VALIDATION_SECONDS
+                            ):
+                                validation_median = (
+                                    build_neutral_baseline(
+                                        calibration_validation_samples
+                                    )
+                                )
+
+                                validation_limits = {
+                                    "blink": 0.35,
+                                    "squint": 0.25,
+                                    "wide": 0.20,
+                                    "brow_down": 0.25,
+                                    "brow_inner_up": 0.25,
+                                    "jaw_open": 0.18,
+                                    "mouth_smile": 0.22,
+                                    "mouth_frown": 0.22,
+                                    "mouth_pucker": 0.28,
+                                    "mouth_funnel": 0.24,
+                                    "mouth_press": 0.25,
+                                    "mouth_roll": 0.25,
+                                    "side_eye": 0.24,
+                                }
+
+                                calibration_stable = all(
+                                    abs(
+                                        validation_median[key]
+                                        - calibration_candidate[key]
+                                    )
+                                    <= limit
+                                    for key, limit
+                                    in validation_limits.items()
+                                )
+
+                                if calibration_stable:
+                                    # Do NOT enable reactions yet.
+                                    #
+                                    # The earlier build could capture a stable
+                                    # neutral window and then immediately drift
+                                    # into very different blendshape scores.
+                                    #
+                                    # The arming phase below tracks the user's
+                                    # CURRENT neutral face one last time and only
+                                    # then enables reactions.
+                                    calibration_candidate = {
+                                        key: float(
+                                            0.40
+                                            * calibration_candidate[key]
+                                            + 0.60
+                                            * validation_median[key]
+                                        )
+                                        for key in CALIBRATION_KEYS
+                                    }
+
+                                    calibration_phase = "arming"
+                                    calibration_arming_started_at = now
+                                    calibration_arming_samples.clear()
+
+                                else:
+                                    print()
+                                    print(
+                                        "Calibration unstable - "
+                                        "automatically retrying..."
+                                    )
+
+                                    calibration_candidate = None
+
+                                    calibration_samples.clear()
+                                    calibration_validation_samples.clear()
+                                    calibration_arming_samples.clear()
+
+                                    calibration_warmup_started_at = now
+                                    calibration_started_at = None
+                                    calibration_validation_started_at = None
+                                    calibration_arming_started_at = None
+
+                                    calibration_progress = 0.0
+                                    calibration_phase = "warming"
+
+                        # ------------------------------------------------
+                        # Phase 4: Final neutral arming / settling window
+                        # ------------------------------------------------
+
+                        elif calibration_phase == "arming":
+                            calibration_arming_samples.append(
+                                {
+                                    key: face_data[key]
+                                    for key in CALIBRATION_KEYS
+                                }
+                            )
+
+                            arming_elapsed = (
+                                now - calibration_arming_started_at
+                            )
+
+                            arming_progress = min(
+                                1.0,
+                                arming_elapsed
+                                / CALIBRATION_ARMING_SECONDS,
+                            )
+
+                            calibration_progress = (
+                                0.85
+                                + 0.15 * arming_progress
+                            )
+
+                            if (
+                                arming_elapsed
+                                >= CALIBRATION_ARMING_SECONDS
+                                and len(calibration_arming_samples)
+                                >= 16
+                            ):
+                                # The final baseline is deliberately based on
+                                # the most recent neutral frames.  This makes the
+                                # live d-values start near zero instead of using
+                                # stale startup scores.
+                                neutral_baseline = (
+                                    build_neutral_baseline(
+                                        calibration_arming_samples
+                                    )
+                                )
+
+                                calibration_progress = 1.0
+                                calibration_phase = "ready"
+
+                                print()
+                                print(
+                                    "Neutral calibration complete."
+                                )
+                                print(
+                                    "Baseline -> "
+                                    f"squint "
+                                    f"{neutral_baseline['squint']:.2f}, "
+                                    f"browDown "
+                                    f"{neutral_baseline['brow_down']:.2f}, "
+                                    f"pucker "
+                                    f"{neutral_baseline['mouth_pucker']:.2f}, "
+                                    f"smile "
+                                    f"{neutral_baseline['mouth_smile']:.2f}"
+                                )
+
+                face_delta = calculate_face_delta(
+                    face_data,
+                    neutral_baseline,
+                )
+
+                calibrated = neutral_baseline is not None
 
                 hand_data = analyze_hands(
                     hand_result
@@ -1667,12 +2183,20 @@ def main():
                 # Raw reaction selection
                 # ------------------------------------------------
 
-                detected_reaction = choose_reaction(
-                    face_data,
-                    face_landmarks,
-                    pose_result,
-                    hand_data,
-                )
+                if calibrated:
+                    detected_reaction = choose_reaction(
+                        face_data,
+                        face_delta,
+                        face_landmarks,
+                        pose_result,
+                        hand_data,
+                    )
+                else:
+                    detected_reaction = None
+                    candidate_reaction = None
+                    candidate_since = None
+                    active_reaction = None
+                    active_last_seen = 0.0
 
                 # ------------------------------------------------
                 # Stable reaction state
@@ -1724,8 +2248,10 @@ def main():
 
                 display_reaction = (
                     manual_reaction
-                    if manual_reaction
+                    if calibrated and manual_reaction
                     else active_reaction
+                    if calibrated
+                    else None
                 )
 
                 # ------------------------------------------------
@@ -1748,8 +2274,6 @@ def main():
                 # ------------------------------------------------
                 # Debug landmarks
                 # ------------------------------------------------
-
-                face_detected = face_landmarks is not None
 
                 pose_detected = bool(
                     pose_result
@@ -1795,6 +2319,32 @@ def main():
                         )
 
                 # ------------------------------------------------
+                # Calibration overlay
+                # ------------------------------------------------
+
+                if not calibrated:
+                    if calibration_phase == "validating":
+                        sample_count = len(
+                            calibration_validation_samples
+                        )
+                    elif calibration_phase == "arming":
+                        sample_count = len(
+                            calibration_arming_samples
+                        )
+                    else:
+                        sample_count = len(
+                            calibration_samples
+                        )
+
+                    draw_calibration_overlay(
+                        frame,
+                        calibration_progress,
+                        sample_count,
+                        face_detected,
+                        calibration_phase,
+                    )
+
+                # ------------------------------------------------
                 # FPS
                 # ------------------------------------------------
 
@@ -1820,9 +2370,13 @@ def main():
                         candidate_reaction,
                         display_reaction,
                         face_data,
+                        face_delta,
                         gesture_debug,
                         fps,
                         performance,
+                        calibrated,
+                        calibration_progress,
+                        calibration_phase,
                     )
 
                 cv2.imshow(
@@ -1840,6 +2394,36 @@ def main():
 
                 if key == ord("l"):
                     draw_landmarks = not draw_landmarks
+
+                if key == ord("r"):
+                    neutral_baseline = None
+                    calibration_candidate = None
+                    calibration_samples.clear()
+                    calibration_validation_samples.clear()
+                    calibration_arming_samples.clear()
+
+                    calibration_warmup_started_at = None
+                    calibration_started_at = None
+                    calibration_validation_started_at = None
+                    calibration_arming_started_at = None
+
+                    calibration_progress = 0.0
+                    calibration_phase = "warming"
+
+                    candidate_reaction = None
+                    candidate_since = None
+                    active_reaction = None
+                    active_last_seen = 0.0
+                    manual_reaction = None
+                    manual_until = 0.0
+
+                    if previous_display_reaction in reaction_players:
+                        reaction_players[previous_display_reaction].stop()
+
+                    previous_display_reaction = None
+
+                    print()
+                    print("Recalibrating neutral face...")
 
                 if key in MANUAL_KEYS:
                     manual_reaction = MANUAL_KEYS[key]
