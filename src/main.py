@@ -18,13 +18,21 @@ from hand_tracker import HandTracker, draw_hands
 OUTPUT_WIDTH = 1920
 OUTPUT_HEIGHT = 1080
 
-# Run MediaPipe on a smaller copy, but render the final UI at 1080p.
-DETECTION_WIDTH = 960
-DETECTION_HEIGHT = 540
+# Keep the final UI at 1080p, but run AI inference on a much smaller frame.
+# MediaPipe landmarks are normalized, so they still map correctly to 1080p.
+DETECTION_WIDTH = 640
+DETECTION_HEIGHT = 360
 
-# Pose + hand tracking at ~half the camera frame rate is enough for gestures
-# and saves a lot of CPU/GPU time at 1080p.
-BODY_DETECTION_EVERY_N_FRAMES = 2
+# Independent detector cadences.
+# Face stays responsive, hands run at roughly half rate, and pose runs less often
+# because it is only needed for larger body gestures such as Absolute Cinema.
+FACE_DETECTION_EVERY_N_FRAMES = 1
+HAND_DETECTION_EVERY_N_FRAMES = 2
+POSE_DETECTION_EVERY_N_FRAMES = 4
+
+# Drawing all 478 face points every frame is expensive.
+# When landmark drawing is enabled, only every Nth point is drawn.
+FACE_LANDMARK_DRAW_STEP = 6
 
 PANEL_X = 24
 PANEL_Y = 24
@@ -280,6 +288,13 @@ def get_value(values, name):
     return values.get(name, 0.0)
 
 
+def ema(previous, new_value, alpha=0.18):
+    """Exponential moving average for stable inference timing numbers."""
+    if previous <= 0.0:
+        return new_value
+    return previous * (1.0 - alpha) + new_value * alpha
+
+
 def point_xy(landmark):
     return np.array([landmark.x, landmark.y], dtype=np.float32)
 
@@ -323,6 +338,10 @@ def make_16_9_1080p(frame):
         new_height = int(width / target_ratio)
         start_y = (height - new_height) // 2
         frame = frame[start_y:start_y + new_height, :]
+
+    # Avoid an expensive full-HD resize if the camera already delivered 1080p.
+    if frame.shape[1] == OUTPUT_WIDTH and frame.shape[0] == OUTPUT_HEIGHT:
+        return frame
 
     return cv2.resize(
         frame,
@@ -1095,6 +1114,7 @@ def draw_debug_panel(
     face,
     gesture_debug,
     fps,
+    performance,
 ):
     draw_transparent_panel(frame)
 
@@ -1122,10 +1142,15 @@ def draw_debug_panel(
 
     draw_text(
         frame,
-        f"{fps:4.1f} FPS   |   1920 x 1080",
+        (
+            f"{fps:4.1f} FPS | "
+            f"F {performance['face_ms']:.1f}  "
+            f"H {performance['hand_ms']:.1f}  "
+            f"P {performance['pose_ms']:.1f} ms"
+        ),
         left,
         PANEL_Y + 104,
-        size=0.38,
+        size=0.36,
         color=(160, 168, 180),
     )
 
@@ -1286,7 +1311,7 @@ def draw_debug_panel(
 
     draw_text(
         frame,
-        "D  Debug     Q  Quit",
+        "D  Panel   L  Landmarks   Q  Quit",
         left,
         PANEL_Y + 958,
         size=0.40,
@@ -1308,6 +1333,8 @@ def draw_debug_panel(
 # ============================================================
 
 def main():
+    cv2.setUseOptimized(True)
+
     required_models = [
         ("Face Landmarker", FACE_MODEL_PATH),
         ("Pose Landmarker", POSE_MODEL_PATH),
@@ -1391,6 +1418,12 @@ def main():
         30,
     )
 
+    # Some backends ignore this, but when supported it reduces camera latency.
+    camera.set(
+        cv2.CAP_PROP_BUFFERSIZE,
+        1,
+    )
+
     if not camera.isOpened():
         print("ERROR: Could not open webcam.")
         pose_tracker.close()
@@ -1409,8 +1442,12 @@ def main():
     )
 
     print()
-    print("MemeMorph 1080p")
-    print("----------------")
+    print("MemeMorph 1080p - Performance Build")
+    print("----------------------------------")
+    print("Output: 1920x1080")
+    print("Inference: 640x360")
+    print("Face: every frame | Hands: every 2 | Pose: every 4")
+    print()
     print("1 = Speed")
     print("2 = Eyebrow")
     print("3 = Surprised")
@@ -1443,10 +1480,19 @@ def main():
     previous_display_reaction = None
 
     frame_counter = 0
+    cached_face_result = None
     cached_pose_result = None
     cached_hand_result = None
 
     last_timestamp_ms = 0
+
+    draw_landmarks = False
+
+    performance = {
+        "face_ms": 0.0,
+        "hand_ms": 0.0,
+        "pose_ms": 0.0,
+    }
 
     fps = 0.0
     fps_last_time = time.perf_counter()
@@ -1502,41 +1548,71 @@ def main():
                 last_timestamp_ms = timestamp_ms
 
                 # ------------------------------------------------
-                # Face every frame
+                # Face detector
                 # ------------------------------------------------
 
-                face_result = (
-                    face_landmarker.detect_for_video(
+                should_run_face = (
+                    cached_face_result is None
+                    or frame_counter % FACE_DETECTION_EVERY_N_FRAMES == 0
+                )
+
+                if should_run_face:
+                    started = time.perf_counter()
+                    cached_face_result = face_landmarker.detect_for_video(
                         mp_image,
                         timestamp_ms,
                     )
-                )
-
-                # ------------------------------------------------
-                # Pose + hand tracking every second frame
-                # ------------------------------------------------
-
-                should_run_body = (
-                    cached_pose_result is None
-                    or cached_hand_result is None
-                    or frame_counter
-                    % BODY_DETECTION_EVERY_N_FRAMES
-                    == 0
-                )
-
-                if should_run_body:
-                    cached_pose_result = pose_tracker.detect(
-                        mp_image,
-                        timestamp_ms,
+                    elapsed_ms = (time.perf_counter() - started) * 1000.0
+                    performance["face_ms"] = ema(
+                        performance["face_ms"],
+                        elapsed_ms,
                     )
 
+                # ------------------------------------------------
+                # Hands - higher cadence than pose
+                # ------------------------------------------------
+
+                should_run_hands = (
+                    cached_hand_result is None
+                    or frame_counter % HAND_DETECTION_EVERY_N_FRAMES == 0
+                )
+
+                if should_run_hands:
+                    started = time.perf_counter()
                     cached_hand_result = hand_tracker.detect(
                         mp_image,
                         timestamp_ms,
                     )
+                    elapsed_ms = (time.perf_counter() - started) * 1000.0
+                    performance["hand_ms"] = ema(
+                        performance["hand_ms"],
+                        elapsed_ms,
+                    )
 
-                pose_result = cached_pose_result
+                # ------------------------------------------------
+                # Pose - lower cadence is enough for body gestures
+                # ------------------------------------------------
+
+                should_run_pose = (
+                    cached_pose_result is None
+                    or frame_counter % POSE_DETECTION_EVERY_N_FRAMES == 0
+                )
+
+                if should_run_pose:
+                    started = time.perf_counter()
+                    cached_pose_result = pose_tracker.detect(
+                        mp_image,
+                        timestamp_ms,
+                    )
+                    elapsed_ms = (time.perf_counter() - started) * 1000.0
+                    performance["pose_ms"] = ema(
+                        performance["pose_ms"],
+                        elapsed_ms,
+                    )
+
+                face_result = cached_face_result
                 hand_result = cached_hand_result
+                pose_result = cached_pose_result
 
                 # ------------------------------------------------
                 # Blendshapes
@@ -1680,9 +1756,9 @@ def main():
                     and pose_result.pose_landmarks
                 )
 
-                if debug_mode:
+                if debug_mode and draw_landmarks:
                     if face_landmarks:
-                        for landmark in face_landmarks:
+                        for landmark in face_landmarks[::FACE_LANDMARK_DRAW_STEP]:
                             x = int(landmark.x * OUTPUT_WIDTH)
                             y = int(landmark.y * OUTPUT_HEIGHT)
 
@@ -1746,6 +1822,7 @@ def main():
                         face_data,
                         gesture_debug,
                         fps,
+                        performance,
                     )
 
                 cv2.imshow(
@@ -1760,6 +1837,9 @@ def main():
 
                 if key == ord("d"):
                     debug_mode = not debug_mode
+
+                if key == ord("l"):
+                    draw_landmarks = not draw_landmarks
 
                 if key in MANUAL_KEYS:
                     manual_reaction = MANUAL_KEYS[key]
