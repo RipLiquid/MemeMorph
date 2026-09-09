@@ -9,6 +9,27 @@ from PIL import Image, ImageSequence
 
 from pose_tracker import PoseTracker, draw_pose
 from hand_tracker import HandTracker, draw_hands
+from app_config import load_local_config, load_mememorph_config
+from reaction_engine import (
+    MANUAL_KEYS,
+    REACTIONS,
+    choose_reaction,
+    configure_reaction_engine,
+    detect_absolute_cinema,
+    detect_facepalm,
+)
+
+
+# ============================================================
+# RUNTIME CONFIGURATION
+# ============================================================
+
+# Load local defaults during module import.
+#
+# This keeps unit tests deterministic and prevents importing main.py from
+# making a network request. Azure App Configuration is only contacted from
+# main(), when the real application starts.
+RUNTIME_CONFIG = load_local_config()
 
 
 # ============================================================
@@ -18,21 +39,26 @@ from hand_tracker import HandTracker, draw_hands
 OUTPUT_WIDTH = 1920
 OUTPUT_HEIGHT = 1080
 
-# Keep the final UI at 1080p, but run AI inference on a much smaller frame.
-# MediaPipe landmarks are normalized, so they still map correctly to 1080p.
-DETECTION_WIDTH = 640
-DETECTION_HEIGHT = 360
+DETECTION_WIDTH = int(
+    RUNTIME_CONFIG["app"]["detection_width"]
+)
+DETECTION_HEIGHT = int(
+    RUNTIME_CONFIG["app"]["detection_height"]
+)
 
-# Independent detector cadences.
-# Face stays responsive, hands run at roughly half rate, and pose runs less often
-# because it is only needed for larger body gestures such as Absolute Cinema.
-FACE_DETECTION_EVERY_N_FRAMES = 1
-HAND_DETECTION_EVERY_N_FRAMES = 2
-POSE_DETECTION_EVERY_N_FRAMES = 4
+FACE_DETECTION_EVERY_N_FRAMES = int(
+    RUNTIME_CONFIG["app"]["face_detection_every_n_frames"]
+)
+HAND_DETECTION_EVERY_N_FRAMES = int(
+    RUNTIME_CONFIG["app"]["hand_detection_every_n_frames"]
+)
+POSE_DETECTION_EVERY_N_FRAMES = int(
+    RUNTIME_CONFIG["app"]["pose_detection_every_n_frames"]
+)
 
-# Drawing all 478 face points every frame is expensive.
-# When landmark drawing is enabled, only every Nth point is drawn.
-FACE_LANDMARK_DRAW_STEP = 6
+FACE_LANDMARK_DRAW_STEP = int(
+    RUNTIME_CONFIG["app"]["face_landmark_draw_step"]
+)
 
 PANEL_X = 24
 PANEL_Y = 24
@@ -42,13 +68,22 @@ PANEL_HEIGHT = 1032
 FONT = cv2.FONT_HERSHEY_DUPLEX
 MANUAL_REACTION_SECONDS = 3.0
 
-# Neutral-face calibration. MemeMorph learns the user's baseline before
-# automatic reactions are enabled.
-CALIBRATION_WARMUP_SECONDS = 1.5
-CALIBRATION_DURATION_SECONDS = 2.5
-CALIBRATION_VALIDATION_SECONDS = 0.8
-CALIBRATION_ARMING_SECONDS = 1.8
-CALIBRATION_MIN_SAMPLES = 28
+CALIBRATION_WARMUP_SECONDS = float(
+    RUNTIME_CONFIG["calibration"]["warmup_seconds"]
+)
+CALIBRATION_DURATION_SECONDS = float(
+    RUNTIME_CONFIG["calibration"]["capture_seconds"]
+)
+CALIBRATION_VALIDATION_SECONDS = float(
+    RUNTIME_CONFIG["calibration"]["validation_seconds"]
+)
+CALIBRATION_ARMING_SECONDS = float(
+    RUNTIME_CONFIG["calibration"]["arming_seconds"]
+)
+CALIBRATION_MIN_SAMPLES = int(
+    RUNTIME_CONFIG["calibration"]["min_samples"]
+)
+
 CALIBRATION_KEYS = [
     "blink",
     "squint",
@@ -85,95 +120,69 @@ REACTION_DIR = PROJECT_ROOT / "assets" / "reactions"
 
 
 # ============================================================
-# REACTIONS
+# RUNTIME CONFIG APPLICATION
 # ============================================================
 
-REACTIONS = {
-    "speed": {
-        "label": "Speed Reverse Smile",
-        "file": "speed_reverse_smile.gif",
-        "overlay_scale": 1.45,
-        "hold": 0.18,
-        "release": 0.28,
-    },
-    "eyebrow": {
-        "label": "Eyebrow Raise",
-        "file": "rock_eyebrow.gif",
-        "overlay_scale": 1.40,
-        "hold": 0.28,
-        "release": 0.30,
-    },
-    "surprised": {
-        "label": "Surprised",
-        "file": "surprised_pikachu.gif",
-        "overlay_scale": 1.40,
-        "hold": 0.18,
-        "release": 0.28,
-    },
-    "sad": {
-        "label": "Sad / Cry",
-        "file": "sad_cry.gif",
-        "overlay_scale": 1.40,
-        "hold": 0.28,
-        "release": 0.35,
-    },
-    "side_eye": {
-        "label": "Side Eye",
-        "file": "side_eye.gif",
-        "overlay_scale": 1.40,
-        "hold": 0.24,
-        "release": 0.32,
-    },
-    "jerry_laugh": {
-        "label": "Jerry Laugh",
-        "file": "mocking_tom_jerry.gif",
-        "overlay_scale": 1.45,
-        "hold": 0.22,
-        "release": 0.32,
-    },
-    "jerry_point": {
-        "label": "Jerry Point & Laugh",
-        "file": "laughing.gif",
-        "overlay_scale": 1.55,
-        "hold": 0.20,
-        "release": 0.38,
-    },
-    "facepalm": {
-        "label": "Facepalm",
-        "file": "hands_on_head.gif",
-        "overlay_scale": 1.55,
-        "hold": 0.20,
-        "release": 0.42,
-    },
-    "thumbs_up": {
-        "label": "Thumbs Up",
-        "file": "thumbs_up.gif",
-        "overlay_scale": 1.55,
-        "hold": 0.22,
-        "release": 0.40,
-    },
-    "absolute_cinema": {
-        "label": "Absolute Cinema",
-        "file": "absolute_cinema.gif",
-        "overlay_scale": 1.80,
-        "hold": 0.28,
-        "release": 0.48,
-    },
-}
+def apply_runtime_config(config):
+    """
+    Replace local defaults with the final merged configuration.
 
-# Manual test keys.
-MANUAL_KEYS = {
-    ord("1"): "speed",
-    ord("2"): "eyebrow",
-    ord("3"): "surprised",
-    ord("4"): "sad",
-    ord("5"): "side_eye",
-    ord("6"): "jerry_laugh",
-    ord("7"): "jerry_point",
-    ord("8"): "facepalm",
-    ord("9"): "thumbs_up",
-    ord("0"): "absolute_cinema",
-}
+    main.py imports with local settings only, so tests stay offline.
+    When the real app starts, this function applies any Azure overrides.
+    """
+    global RUNTIME_CONFIG
+    global DETECTION_WIDTH
+    global DETECTION_HEIGHT
+    global FACE_DETECTION_EVERY_N_FRAMES
+    global HAND_DETECTION_EVERY_N_FRAMES
+    global POSE_DETECTION_EVERY_N_FRAMES
+    global FACE_LANDMARK_DRAW_STEP
+    global CALIBRATION_WARMUP_SECONDS
+    global CALIBRATION_DURATION_SECONDS
+    global CALIBRATION_VALIDATION_SECONDS
+    global CALIBRATION_ARMING_SECONDS
+    global CALIBRATION_MIN_SAMPLES
+
+    RUNTIME_CONFIG = config
+
+    DETECTION_WIDTH = int(
+        config["app"]["detection_width"]
+    )
+    DETECTION_HEIGHT = int(
+        config["app"]["detection_height"]
+    )
+
+    FACE_DETECTION_EVERY_N_FRAMES = int(
+        config["app"]["face_detection_every_n_frames"]
+    )
+    HAND_DETECTION_EVERY_N_FRAMES = int(
+        config["app"]["hand_detection_every_n_frames"]
+    )
+    POSE_DETECTION_EVERY_N_FRAMES = int(
+        config["app"]["pose_detection_every_n_frames"]
+    )
+
+    FACE_LANDMARK_DRAW_STEP = int(
+        config["app"]["face_landmark_draw_step"]
+    )
+
+    CALIBRATION_WARMUP_SECONDS = float(
+        config["calibration"]["warmup_seconds"]
+    )
+    CALIBRATION_DURATION_SECONDS = float(
+        config["calibration"]["capture_seconds"]
+    )
+    CALIBRATION_VALIDATION_SECONDS = float(
+        config["calibration"]["validation_seconds"]
+    )
+    CALIBRATION_ARMING_SECONDS = float(
+        config["calibration"]["arming_seconds"]
+    )
+    CALIBRATION_MIN_SAMPLES = int(
+        config["calibration"]["min_samples"]
+    )
+
+    configure_reaction_engine(config)
 
 
 # ============================================================
@@ -742,262 +751,6 @@ def analyze_hands(hand_result):
 
 
 # ============================================================
-# BODY / HAND REACTIONS
-# ============================================================
-
-def detect_facepalm(face_landmarks, hand_data):
-    """
-    Open palm overlapping the upper part of the face.
-    """
-    if not face_landmarks or not hand_data["palms"]:
-        return False
-
-    face_x1, face_y1, face_x2, face_y2 = get_face_bounds_normalized(
-        face_landmarks
-    )
-
-    face_width = max(face_x2 - face_x1, 0.01)
-    face_height = max(face_y2 - face_y1, 0.01)
-
-    target = (
-        (face_x1 + face_x2) / 2.0,
-        face_y1 + face_height * 0.28,
-    )
-
-    max_distance = max(face_width, face_height) * 0.62
-
-    for palm in hand_data["palms"]:
-        # Facepalm should be an open-ish palm, not just any fist near the face.
-        if not palm["open"]:
-            continue
-
-        inside_x = (
-            face_x1 - face_width * 0.28
-            <= palm["x"]
-            <= face_x2 + face_width * 0.28
-        )
-
-        inside_y = (
-            face_y1 - face_height * 0.30
-            <= palm["y"]
-            <= face_y1 + face_height * 0.72
-        )
-
-        close_enough = (
-            distance_points(
-                (palm["x"], palm["y"]),
-                target,
-            )
-            < max_distance
-        )
-
-        if inside_x and inside_y and close_enough:
-            return True
-
-    return False
-
-
-def detect_absolute_cinema(pose_result, hand_data):
-    """
-    Absolute Cinema:
-      - two hands visible
-      - both open
-      - both around shoulder height or higher
-      - hands spread wider than shoulders
-    """
-    if (
-        not pose_result
-        or not pose_result.pose_landmarks
-        or hand_data["count"] < 2
-        or hand_data["open_hands"] < 2
-    ):
-        return False
-
-    pose = pose_result.pose_landmarks[0]
-
-    left_shoulder = pose[11]
-    right_shoulder = pose[12]
-
-    shoulder_y = average(left_shoulder.y, right_shoulder.y)
-    shoulder_width = max(
-        abs(left_shoulder.x - right_shoulder.x),
-        0.08,
-    )
-
-    palms = hand_data["palms"]
-
-    raised_count = sum(
-        1
-        for palm in palms
-        if palm["y"] < shoulder_y + 0.06
-    )
-
-    palm_xs = [palm["x"] for palm in palms]
-    hand_spread = max(palm_xs) - min(palm_xs)
-
-    return (
-        raised_count >= 2
-        and hand_spread > shoulder_width * 1.25
-    )
-
-
-# ============================================================
-# FACE REACTION CONDITIONS
-# ============================================================
-
-def speed_condition(face, face_delta):
-    """
-    IShowSpeed reverse-smile expression.
-
-    This reaction is intentionally driven by CHANGE FROM THE USER'S
-    CALIBRATED NEUTRAL FACE rather than raw scores.
-
-    The user's tests showed mouthPucker can be extremely high even while
-    neutral, so pucker is no longer used as a required Speed signal.
-    """
-    eye_change = (
-        face_delta["squint"] > 0.10
-        or face_delta["blink"] > 0.18
-    )
-
-    brow_change = (
-        face_delta["brow_down"] > 0.14
-    )
-
-    mouth_closed = (
-        face["jaw_open"] < 0.18
-    )
-
-    return (
-        eye_change
-        and brow_change
-        and mouth_closed
-    )
-
-
-def eyebrow_condition(face, face_delta):
-    """
-    Single-eyebrow raise.
-
-    Calibrated from the live test:
-      raw brow asymmetry ~0.23
-      delta brow asymmetry ~+0.20
-
-    Using both raw asymmetry and change from neutral keeps normal
-    eyebrow movement from triggering too easily.
-    """
-    return (
-        face_delta["brow_asymmetry"] > 0.12
-        and face["brow_asymmetry"] > 0.16
-        and face["jaw_open"] < 0.20
-    )
-
-
-def surprised_condition(face):
-    return (
-        face["wide"] > 0.22
-        and face["jaw_open"] > 0.30
-    )
-
-
-def sad_condition(face):
-    return (
-        face["brow_inner_up"] > 0.22
-        and face["mouth_frown"] > 0.15
-        and face["mouth_smile"] < 0.20
-        and face["jaw_open"] < 0.32
-    )
-
-
-def side_eye_condition(face):
-    return (
-        face["side_eye"] > 0.34
-        and face["blink"] < 0.42
-        and face["jaw_open"] < 0.30
-    )
-
-
-def jerry_laugh_condition(face):
-    return (
-        face["mouth_smile"] > 0.35
-        and face["jaw_open"] > 0.22
-        and (
-            face["squint"] > 0.20
-            or face["blink"] > 0.25
-        )
-    )
-
-
-def jerry_point_condition(face, hand_data):
-    """
-    Requested Jerry feature:
-    sideways thumb point + laughing/smirking face.
-    """
-    laughing_face = (
-        (
-            face["mouth_smile"] > 0.18
-            or face["jaw_open"] > 0.20
-        )
-        and (
-            face["squint"] > 0.14
-            or face["blink"] > 0.22
-        )
-    )
-
-    return hand_data["thumb_point"] and laughing_face
-
-
-def thumbs_up_condition(hand_data):
-    return hand_data["thumbs_up"]
-
-
-# ============================================================
-# REACTION ENGINE
-# ============================================================
-
-def choose_reaction(
-    face,
-    face_delta,
-    face_landmarks,
-    pose_result,
-    hand_data,
-):
-    # Most specific gestures first.
-
-    if detect_absolute_cinema(pose_result, hand_data):
-        return "absolute_cinema"
-
-    if detect_facepalm(face_landmarks, hand_data):
-        return "facepalm"
-
-    if jerry_point_condition(face, hand_data):
-        return "jerry_point"
-
-    if thumbs_up_condition(hand_data):
-        return "thumbs_up"
-
-    if speed_condition(face, face_delta):
-        return "speed"
-
-    if eyebrow_condition(face, face_delta):
-        return "eyebrow"
-
-    if surprised_condition(face):
-        return "surprised"
-
-    if sad_condition(face):
-        return "sad"
-
-    if side_eye_condition(face):
-        return "side_eye"
-
-    if jerry_laugh_condition(face):
-        return "jerry_laugh"
-
-    return None
-
-
-# ============================================================
 # DEBUG PANEL
 # ============================================================
 
@@ -1544,6 +1297,46 @@ def draw_debug_panel(
 
 def main():
     cv2.setUseOptimized(True)
+
+    # --------------------------------------------------------
+    # Configuration
+    # --------------------------------------------------------
+
+    try:
+        final_config = load_mememorph_config()
+        apply_runtime_config(final_config)
+
+    except Exception as error:
+        print()
+        print("ERROR: Could not load MemeMorph configuration.")
+        print(f"{type(error).__name__}: {error}")
+        print()
+        return
+
+    config_source = RUNTIME_CONFIG.get(
+        "_meta",
+        {},
+    ).get(
+        "source",
+        "LOCAL",
+    )
+
+    azure_override_count = RUNTIME_CONFIG.get(
+        "_meta",
+        {},
+    ).get(
+        "azure_override_count",
+        0,
+    )
+
+    print()
+    print("MemeMorph configuration")
+    print("-----------------------")
+    print(f"Source: {config_source}")
+    print(
+        "Azure overrides: "
+        f"{azure_override_count}"
+    )
 
     required_models = [
         ("Face Landmarker", FACE_MODEL_PATH),

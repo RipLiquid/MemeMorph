@@ -1,4 +1,5 @@
 import sys
+import copy
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 import main as mm
+import reaction_engine as re
 
 
 def make_face(**overrides):
@@ -263,7 +265,7 @@ class TestFaceReactions(unittest.TestCase):
         )
 
         self.assertTrue(
-            mm.speed_condition(
+            re.speed_condition(
                 face,
                 delta,
             )
@@ -281,7 +283,7 @@ class TestFaceReactions(unittest.TestCase):
         )
 
         self.assertFalse(
-            mm.speed_condition(
+            re.speed_condition(
                 face,
                 delta,
             )
@@ -298,7 +300,7 @@ class TestFaceReactions(unittest.TestCase):
         )
 
         self.assertTrue(
-            mm.eyebrow_condition(
+            re.eyebrow_condition(
                 face,
                 delta,
             )
@@ -315,7 +317,7 @@ class TestFaceReactions(unittest.TestCase):
         )
 
         self.assertFalse(
-            mm.eyebrow_condition(
+            re.eyebrow_condition(
                 face,
                 delta,
             )
@@ -328,7 +330,7 @@ class TestFaceReactions(unittest.TestCase):
         )
 
         self.assertTrue(
-            mm.surprised_condition(face)
+            re.surprised_condition(face)
         )
 
     def test_surprised_requires_wide_eyes_and_open_jaw(self):
@@ -343,13 +345,13 @@ class TestFaceReactions(unittest.TestCase):
         )
 
         self.assertFalse(
-            mm.surprised_condition(
+            re.surprised_condition(
                 not_wide
             )
         )
 
         self.assertFalse(
-            mm.surprised_condition(
+            re.surprised_condition(
                 mouth_closed
             )
         )
@@ -363,7 +365,7 @@ class TestFaceReactions(unittest.TestCase):
         )
 
         self.assertTrue(
-            mm.sad_condition(face)
+            re.sad_condition(face)
         )
 
     def test_sad_rejects_smile(self):
@@ -375,7 +377,7 @@ class TestFaceReactions(unittest.TestCase):
         )
 
         self.assertFalse(
-            mm.sad_condition(face)
+            re.sad_condition(face)
         )
 
     def test_side_eye_detected(self):
@@ -386,7 +388,7 @@ class TestFaceReactions(unittest.TestCase):
         )
 
         self.assertTrue(
-            mm.side_eye_condition(face)
+            re.side_eye_condition(face)
         )
 
     def test_side_eye_rejects_closed_eyes(self):
@@ -397,7 +399,7 @@ class TestFaceReactions(unittest.TestCase):
         )
 
         self.assertFalse(
-            mm.side_eye_condition(face)
+            re.side_eye_condition(face)
         )
 
     def test_jerry_laugh_detected(self):
@@ -408,7 +410,7 @@ class TestFaceReactions(unittest.TestCase):
         )
 
         self.assertTrue(
-            mm.jerry_laugh_condition(
+            re.jerry_laugh_condition(
                 face
             )
         )
@@ -421,7 +423,7 @@ class TestFaceReactions(unittest.TestCase):
         )
 
         self.assertFalse(
-            mm.jerry_laugh_condition(
+            re.jerry_laugh_condition(
                 face
             )
         )
@@ -459,7 +461,7 @@ class TestHandReactions(unittest.TestCase):
         }
 
         self.assertTrue(
-            mm.jerry_point_condition(
+            re.jerry_point_condition(
                 face,
                 hand_data,
             )
@@ -468,7 +470,7 @@ class TestHandReactions(unittest.TestCase):
         hand_data["thumb_point"] = False
 
         self.assertFalse(
-            mm.jerry_point_condition(
+            re.jerry_point_condition(
                 face,
                 hand_data,
             )
@@ -476,13 +478,13 @@ class TestHandReactions(unittest.TestCase):
 
     def test_thumbs_up_condition(self):
         self.assertTrue(
-            mm.thumbs_up_condition(
+            re.thumbs_up_condition(
                 {"thumbs_up": True}
             )
         )
 
         self.assertFalse(
-            mm.thumbs_up_condition(
+            re.thumbs_up_condition(
                 {"thumbs_up": False}
             )
         )
@@ -506,7 +508,7 @@ class TestBodyReactions(unittest.TestCase):
         }
 
         self.assertTrue(
-            mm.detect_facepalm(
+            re.detect_facepalm(
                 face_landmarks,
                 hand_data,
             )
@@ -528,7 +530,7 @@ class TestBodyReactions(unittest.TestCase):
         }
 
         self.assertFalse(
-            mm.detect_facepalm(
+            re.detect_facepalm(
                 face_landmarks,
                 hand_data,
             )
@@ -557,7 +559,7 @@ class TestBodyReactions(unittest.TestCase):
         }
 
         self.assertTrue(
-            mm.detect_absolute_cinema(
+            re.detect_absolute_cinema(
                 pose_result,
                 hand_data,
             )
@@ -586,7 +588,7 @@ class TestBodyReactions(unittest.TestCase):
         }
 
         self.assertFalse(
-            mm.detect_absolute_cinema(
+            re.detect_absolute_cinema(
                 pose_result,
                 hand_data,
             )
@@ -614,42 +616,42 @@ class TestReactionPriority(unittest.TestCase):
         """
         with (
             patch.object(
-                mm,
+                re,
                 "detect_absolute_cinema",
                 return_value=True,
             ),
             patch.object(
-                mm,
+                re,
                 "detect_facepalm",
                 return_value=True,
             ),
             patch.object(
-                mm,
+                re,
                 "jerry_point_condition",
                 return_value=True,
             ),
             patch.object(
-                mm,
+                re,
                 "thumbs_up_condition",
                 return_value=True,
             ),
             patch.object(
-                mm,
+                re,
                 "speed_condition",
                 return_value=True,
             ),
             patch.object(
-                mm,
+                re,
                 "eyebrow_condition",
                 return_value=True,
             ),
             patch.object(
-                mm,
+                re,
                 "surprised_condition",
                 return_value=True,
             ),
         ):
-            reaction = mm.choose_reaction(
+            reaction = re.choose_reaction(
                 self.face,
                 self.delta,
                 None,
@@ -665,32 +667,32 @@ class TestReactionPriority(unittest.TestCase):
     def test_facepalm_beats_face_only_reactions(self):
         with (
             patch.object(
-                mm,
+                re,
                 "detect_absolute_cinema",
                 return_value=False,
             ),
             patch.object(
-                mm,
+                re,
                 "detect_facepalm",
                 return_value=True,
             ),
             patch.object(
-                mm,
+                re,
                 "speed_condition",
                 return_value=True,
             ),
             patch.object(
-                mm,
+                re,
                 "eyebrow_condition",
                 return_value=True,
             ),
             patch.object(
-                mm,
+                re,
                 "surprised_condition",
                 return_value=True,
             ),
         ):
-            reaction = mm.choose_reaction(
+            reaction = re.choose_reaction(
                 self.face,
                 self.delta,
                 None,
@@ -706,32 +708,32 @@ class TestReactionPriority(unittest.TestCase):
     def test_jerry_point_beats_thumbs_up_and_face_reactions(self):
         with (
             patch.object(
-                mm,
+                re,
                 "detect_absolute_cinema",
                 return_value=False,
             ),
             patch.object(
-                mm,
+                re,
                 "detect_facepalm",
                 return_value=False,
             ),
             patch.object(
-                mm,
+                re,
                 "jerry_point_condition",
                 return_value=True,
             ),
             patch.object(
-                mm,
+                re,
                 "thumbs_up_condition",
                 return_value=True,
             ),
             patch.object(
-                mm,
+                re,
                 "speed_condition",
                 return_value=True,
             ),
         ):
-            reaction = mm.choose_reaction(
+            reaction = re.choose_reaction(
                 self.face,
                 self.delta,
                 None,
@@ -745,7 +747,7 @@ class TestReactionPriority(unittest.TestCase):
         )
 
     def test_no_match_returns_none(self):
-        reaction = mm.choose_reaction(
+        reaction = re.choose_reaction(
             self.face,
             self.delta,
             None,
@@ -756,6 +758,70 @@ class TestReactionPriority(unittest.TestCase):
         self.assertIsNone(
             reaction
         )
+
+
+class TestReactionArchitecture(unittest.TestCase):
+
+    def test_every_priority_reaction_has_detector(self):
+        self.assertEqual(
+            set(re.REACTION_PRIORITY),
+            set(re.REACTION_DETECTORS),
+        )
+
+    def test_every_reaction_has_metadata_and_runtime_config(self):
+        self.assertEqual(
+            set(re.REACTION_METADATA),
+            set(re.REACTIONS),
+        )
+
+        self.assertEqual(
+            set(re.REACTION_PRIORITY),
+            set(re.REACTIONS),
+        )
+
+    def test_disabled_reaction_is_skipped(self):
+        original = mm.load_local_config()
+        modified = copy.deepcopy(original)
+
+        modified["reactions"]["speed"]["enabled"] = False
+
+        re.configure_reaction_engine(
+            modified
+        )
+
+        try:
+            face = make_face(
+                jaw_open=0.02,
+            )
+
+            delta = make_delta(
+                squint=0.40,
+                brow_down=0.40,
+            )
+
+            reaction = re.choose_reaction(
+                face,
+                delta,
+                None,
+                None,
+                {
+                    "count": 0,
+                    "open_hands": 0,
+                    "thumb_point": False,
+                    "thumbs_up": False,
+                    "palms": [],
+                },
+            )
+
+            self.assertNotEqual(
+                reaction,
+                "speed",
+            )
+
+        finally:
+            re.configure_reaction_engine(
+                original
+            )
 
 
 if __name__ == "__main__":
